@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#12283D" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Rayon Lait" />
+<link rel="manifest" href="./manifest.json" />
+<link rel="apple-touch-icon" href="./icons/icon-192.png" />
+<title>Rayon Lait</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #F4F7F9; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+
+const TYPES = [
+  { id: "avoine", label: "Lait d'avoine", short: "Avoine", color: "#B8863B", tint: "#F8F1E7" },
+  { id: "pistache", label: "Lait de pistache", short: "Pistache", color: "#6B8E4E", tint: "#EFF4EA" },
+  { id: "macadamia", label: "Lait de macadamia", short: "Macadamia", color: "#A67C52", tint: "#F5F0EA" },
+  { id: "amande", label: "Lait d'amande", short: "Amande", color: "#B99226", tint: "#F7F2E4" },
+  { id: "soja", label: "Lait de soja", short: "Soja", color: "#4E8E7C", tint: "#E9F3F0" },
+  { id: "coco", label: "Lait de coco", short: "Coco", color: "#4B9AAE", tint: "#E8F3F5" },
+  { id: "chai", label: "Concentré de chai", short: "Chai", color: "#A6560C", tint: "#F7EBE1" },
+];
+
+const LOW_STOCK_THRESHOLD = 4;
+const STORAGE_KEY = "rayon-lait-entries";
+
+function daysUntil(dateStr) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const d = new Date(dateStr);
+  d.setHours(0, 0, 0, 0);
+  return Math.round((d - today) / 86400000);
+}
+
+function statusOf(days) {
+  if (days < 0) return { key: "expired", label: "Périmé", color: "#B23A2E" };
+  if (days <= 2) return { key: "soon", label: "Bientôt périmé", color: "#A6660C" };
+  return { key: "ok", label: "OK", color: "#2E6B4F" };
+}
+
+function fmtDate(dateStr) {
+  const d = new Date(dateStr);
+  return d.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "2-digit" });
+}
+
+function uid() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+
+function loadEntries() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function saveEntries(entries) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+  } catch (e) {
+    console.error("Erreur de sauvegarde locale", e);
+  }
+}
+
+function checkAndNotify(entries) {
+  if (!("Notification" in window)) return;
+  if (Notification.permission !== "granted") return;
+  const urgent = entries.filter((e) => daysUntil(e.expDate) <= 2);
+  if (urgent.length === 0) return;
+  const lastCheck = localStorage.getItem("rayon-lait-last-notif");
+  const todayStr = new Date().toDateString();
+  if (lastCheck === todayStr) return;
+  localStorage.setItem("rayon-lait-last-notif", todayStr);
+  new Notification("Rayon Lait — à vérifier", {
+    body: `${urgent.length} produit(s) périmé(s) ou bientôt périmés.`,
+    icon: "./icons/icon-192.png",
+  });
+}
+
+function App() {
+  const [entries, setEntries] = useState(() => loadEntries());
+  const [loaded] = useState(true);
+  const [activeTypeId, setActiveTypeId] = useState(TYPES[0].id);
+  const [qty, setQty] = useState(6);
+  const [expDate, setExpDate] = useState("");
+  const [error, setError] = useState("");
+  const [justMerged, setJustMerged] = useState(false);
+  const [notifStatus, setNotifStatus] = useState(
+    "Notification" in window ? Notification.permission : "unsupported"
+  );
+
+  const activeType = TYPES.find((t) => t.id === activeTypeId);
+
+  useEffect(() => {
+    checkAndNotify(entries);
+  }, []);
+
+  const persist = (next) => {
+    setEntries(next);
+    saveEntries(next);
+  };
+
+  const requestNotifPermission = () => {
+    if (!("Notification" in window)) return;
+    Notification.requestPermission().then((perm) => setNotifStatus(perm));
+  };
+
+  const addEntry = () => {
+    if (!expDate) {
+      setError("Merci d'indiquer une date de péremption.");
+      return;
+    }
+    setError("");
+    const addedQty = Math.max(1, Number(qty) || 1);
+    const existing = entries.find((e) => e.typeId === activeTypeId && e.expDate === expDate);
+
+    if (existing) {
+      const next = entries.map((e) => (e.id === existing.id ? { ...e, qty: e.qty + addedQty } : e));
+      persist(next);
+      setJustMerged(true);
+      setTimeout(() => setJustMerged(false), 1800);
+    } else {
+      const entry = { id: uid(), typeId: activeTypeId, qty: addedQty, expDate, addedAt: new Date().toISOString() };
+      persist([...entries, entry]);
+    }
+    setQty(6);
+    setExpDate("");
+  };
+
+  const removeEntry = (id) => persist(entries.filter((e) => e.id !== id));
+
+  const decrementEntry = (id) => {
+    const target = entries.find((e) => e.id === id);
+    if (!target) return;
+    if (target.qty <= 1) removeEntry(id);
+    else persist(entries.map((e) => (e.id === id ? { ...e, qty: e.qty - 1 } : e)));
+  };
+
+  const cabinetEntries = useMemo(() => {
+    return entries.filter((e) => e.typeId === activeTypeId).sort((a, b) => new Date(a.expDate) - new Date(b.expDate));
+  }, [entries, activeTypeId]);
+
+  const cabinetCounts = useMemo(() => {
+    let expired = 0, soon = 0;
+    cabinetEntries.forEach((e) => {
+      const s = statusOf(daysUntil(e.expDate));
+      if (s.key === "expired") expired++;
+      else if (s.key === "soon") soon++;
+    });
+    return { expired, soon };
+  }, [cabinetEntries]);
+
+  const typeTotals = useMemo(() => {
+    const map = {};
+    entries.forEach((e) => {
+      if (!map[e.typeId]) map[e.typeId] = { qty: 0, alert: false };
+      map[e.typeId].qty += e.qty;
+      const s = statusOf(daysUntil(e.expDate));
+      if (s.key !== "ok") map[e.typeId].alert = true;
+    });
+    return map;
+  }, [entries]);
+
+  const globalSummary = useMemo(() => {
+    const attention = [];
+    TYPES.forEach((t) => {
+      const total = typeTotals[t.id];
+      const totalQty = total?.qty || 0;
+      if (total?.alert) attention.push({ ...t, reason: "péremption" });
+      else if (totalQty > 0 && totalQty <= LOW_STOCK_THRESHOLD) attention.push({ ...t, reason: "stock bas" });
+      else if (totalQty === 0) attention.push({ ...t, reason: "épuisé" });
+    });
+    return attention;
+  }, [typeTotals]);
+
+  const activeTotalQty = typeTotals[activeTypeId]?.qty || 0;
+
+  return (
+    <div style={{ ...styles.page, background: activeType.tint }}>
+      <header style={styles.header}>
+        <div style={styles.headerTop}>
+          <div style={{ ...styles.frostDot, background: activeType.color }} />
+          <span style={styles.eyebrow}>ARMOIRES DU RAYON</span>
+        </div>
+        <h1 style={{ ...styles.title, color: activeType.color }}>{activeType.label}</h1>
+        <p style={styles.subtitle}>Le plus récent derrière. Le plus ancien devant. Toujours.</p>
+      </header>
+
+      {notifStatus === "default" && (
+        <button style={styles.notifButton} onClick={requestNotifPermission}>
+          🔔 Activer les alertes à l'ouverture de l'app
+        </button>
+      )}
+
+      {globalSummary.length > 0 && (
+        <div style={styles.overviewCard}>
+          <div style={styles.overviewTitle}>À vérifier dans tout le rayon</div>
+          <div style={styles.overviewList}>
+            {globalSummary.map((t) => (
+              <button key={t.id} onClick={() => setActiveTypeId(t.id)} style={{ ...styles.overviewChip, borderColor: t.color, color: t.color }}>
+                {t.short} — {t.reason}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div style={styles.tabsScroll}>
+        {TYPES.map((t) => {
+          const total = typeTotals[t.id];
+          const active = t.id === activeTypeId;
+          return (
+            <button key={t.id} onClick={() => setActiveTypeId(t.id)}
+              style={{ ...styles.tab, background: active ? t.color : "#fff", color: active ? "#fff" : "#43607A", border: `1px solid ${active ? t.color : "#E4EBF0"}` }}>
+              {total?.alert && !active && <span style={styles.tabDot} />}
+              {t.short}{total ? ` · ${total.qty}` : ""}
+            </button>
+          );
+        })}
+      </div>
+
+      {activeTotalQty === 0 && (
+        <div style={{ ...styles.alertChip, background: "#43607A", marginBottom: 18 }}>
+          Armoire vide — aucun {activeType.short.toLowerCase()} en stock
+        </div>
+      )}
+      {(cabinetCounts.expired > 0 || cabinetCounts.soon > 0) && (
+        <div style={styles.alertBanner}>
+          {cabinetCounts.expired > 0 && (
+            <div style={{ ...styles.alertChip, background: "#B23A2E" }}>{cabinetCounts.expired} périmé(s) — à retirer immédiatement</div>
+          )}
+          {cabinetCounts.soon > 0 && (
+            <div style={{ ...styles.alertChip, background: "#A6660C" }}>{cabinetCounts.soon} bientôt périmé(s) — tout devant</div>
+          )}
+        </div>
+      )}
+
+      <section style={styles.card}>
+        <h2 style={styles.cardTitle}>Ajouter à l'armoire « {activeType.short} »</h2>
+        <div style={styles.row}>
+          <div style={{ flex: 1 }}>
+            <label style={styles.label}>Quantité</label>
+            <input style={styles.input} type="number" min="1" value={qty} onChange={(e) => setQty(e.target.value)} />
+          </div>
+          <div style={{ flex: 2 }}>
+            <label style={styles.label}>Date de péremption (DLC)</label>
+            <input style={styles.input} type="date" value={expDate} onChange={(e) => setExpDate(e.target.value)} />
+          </div>
+        </div>
+        {error && <p style={styles.errorText}>{error}</p>}
+        {justMerged && <p style={{ ...styles.errorText, color: "#2E6B4F" }}>Quantité ajoutée à l'entrée existante de cette date.</p>}
+        <button style={{ ...styles.addButton, background: activeType.color }} onClick={addEntry}>+ Ajouter à cette armoire</button>
+      </section>
+
+      <section>
+        <div style={styles.shelfHeaderRow}>
+          <h2 style={styles.cardTitle}>Ordre dans l'armoire</h2>
+          <span style={styles.shelfHint}>devant → derrière</span>
+        </div>
+        {cabinetEntries.length === 0 && (
+          <div style={styles.emptyState}>Armoire « {activeType.short} » vide. Ajoute la première livraison ci-dessus.</div>
+        )}
+        <div style={styles.shelf}>
+          {cabinetEntries.map((e, i) => {
+            const days = daysUntil(e.expDate);
+            const s = statusOf(days);
+            return (
+              <div key={e.id} style={{ ...styles.carton, borderLeftColor: s.color }}>
+                <div style={styles.cartonPosCol}>
+                  <span style={{ ...styles.cartonPos, color: i === 0 ? activeType.color : "#9AAEBE" }}>{i === 0 ? "DEVANT" : `#${i + 1}`}</span>
+                </div>
+                <div style={styles.cartonBody}>
+                  <div style={styles.cartonTop}>
+                    <span style={styles.cartonType}>{e.qty}× unités</span>
+                    <div style={styles.cartonActions}>
+                      <button style={styles.stepBtn} onClick={() => decrementEntry(e.id)}>−1</button>
+                      <button style={styles.removeBtn} onClick={() => removeEntry(e.id)}>✕</button>
+                    </div>
+                  </div>
+                  <div style={styles.cartonMeta}>
+                    <span>DLC {fmtDate(e.expDate)}</span>
+                    <span style={{ color: s.color, fontWeight: 700 }}>
+                      {s.key === "expired" ? `Périmé (${Math.abs(days)} j)` : s.key === "soon" ? (days === 0 ? "Périme aujourd'hui" : `${days} j restants`) : `${days} j restants`}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+const styles = {
+  page: { minHeight: "100vh", fontFamily: "'Inter','Segoe UI',system-ui,sans-serif", color: "#1B3145", padding: "24px 16px 48px", maxWidth: 480, margin: "0 auto", overflowX: "hidden", boxSizing: "border-box" },
+  header: { marginBottom: 16 },
+  headerTop: { display: "flex", alignItems: "center", gap: 8, marginBottom: 6 },
+  frostDot: { width: 6, height: 6, borderRadius: "50%" },
+  eyebrow: { fontSize: 11, letterSpacing: "0.14em", color: "#7C93A6", fontWeight: 600 },
+  title: { fontSize: 26, fontWeight: 800, margin: "2px 0 4px", letterSpacing: "-0.02em" },
+  subtitle: { fontSize: 13.5, color: "#7C93A6", margin: 0 },
+  notifButton: { display: "block", width: "100%", marginBottom: 16, padding: "10px 14px", borderRadius: 10, border: "1px solid #E4EBF0", background: "#fff", color: "#43607A", fontSize: 13, fontWeight: 700, cursor: "pointer" },
+  overviewCard: { background: "#fff", border: "1px solid #E4EBF0", borderRadius: 12, padding: "12px 14px", marginBottom: 16 },
+  overviewTitle: { fontSize: 11.5, fontWeight: 700, color: "#8199AB", marginBottom: 8 },
+  overviewList: { display: "flex", flexWrap: "wrap", gap: 6 },
+  overviewChip: { background: "#fff", border: "1px solid", borderRadius: 999, padding: "5px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" },
+  tabsScroll: { display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4, marginBottom: 16 },
+  tab: { flex: "0 0 auto", padding: "8px 14px", borderRadius: 999, fontSize: 12.5, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap", position: "relative" },
+  tabDot: { display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "#B23A2E", marginRight: 6, verticalAlign: "middle" },
+  alertBanner: { display: "flex", flexDirection: "column", gap: 8, marginBottom: 18 },
+  alertChip: { color: "#fff", fontSize: 13, fontWeight: 600, padding: "10px 14px", borderRadius: 10 },
+  card: { background: "#fff", borderRadius: 14, padding: 18, marginBottom: 26, border: "1px solid #E4EBF0" },
+  cardTitle: { fontSize: 14, fontWeight: 700, margin: 0, color: "#12283D" },
+  label: { display: "block", fontSize: 11.5, fontWeight: 600, color: "#8199AB", marginBottom: 4, marginTop: 10 },
+  input: { width: "100%", padding: "10px 12px", borderRadius: 9, border: "1px solid #E4EBF0", fontSize: 15, background: "#FAFCFD", color: "#12283D", boxSizing: "border-box" },
+  row: { display: "flex", gap: 10, marginTop: 12 },
+  errorText: { color: "#B23A2E", fontSize: 13, marginTop: 8 },
+  addButton: { width: "100%", marginTop: 16, padding: "12px 0", borderRadius: 9, border: "none", color: "#fff", fontSize: 14.5, fontWeight: 700, cursor: "pointer" },
+  shelfHeaderRow: { display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "baseline", rowGap: 4, marginBottom: 10 },
+  shelfHint: { fontSize: 11.5, color: "#9AAEBE", fontWeight: 600, whiteSpace: "nowrap" },
+  emptyState: { background: "#fff", border: "1px dashed #DCE7EE", borderRadius: 12, padding: 20, textAlign: "center", color: "#9AAEBE", fontSize: 13.5 },
+  shelf: { display: "flex", flexDirection: "column", gap: 8 },
+  carton: { display: "flex", alignItems: "stretch", gap: 12, background: "#fff", borderRadius: 10, border: "1px solid #EAEFF3", borderLeft: "3px solid", padding: "12px 14px" },
+  cartonPosCol: { display: "flex", alignItems: "center", flexShrink: 0 },
+  cartonPos: { fontSize: 10.5, fontWeight: 800, letterSpacing: "0.05em" },
+  cartonBody: { flex: 1, minWidth: 0 },
+  cartonTop: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 },
+  cartonActions: { display: "flex", alignItems: "center", gap: 6, flexShrink: 0 },
+  stepBtn: { border: "1px solid #E4EBF0", background: "#FAFCFD", color: "#43607A", fontSize: 12, fontWeight: 700, cursor: "pointer", padding: "3px 7px", borderRadius: 6, lineHeight: 1 },
+  removeBtn: { border: "none", background: "transparent", color: "#B7C4CE", fontSize: 13, cursor: "pointer", padding: 4, lineHeight: 1 },
+  cartonType: { fontSize: 14.5, fontWeight: 700, color: "#12283D" },
+  cartonMeta: { display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", fontSize: 12.5, color: "#7C93A6", marginTop: 3, rowGap: 2 },
+};
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("./sw.js").catch(() => {});
+    });
+  }
+</script>
+</body>
+</html>
